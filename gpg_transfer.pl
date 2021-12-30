@@ -2,62 +2,112 @@
 
 use strict;
 use warnings;
-use v5.10;
-use Data::Dumper;
 
 use File::Basename qw(basename dirname);
-use File::Find     qw(find);
 
 my $usage = << "EOF";
 
- usage: $0 [params] [file]
+ usage: $0 [params] gpg-id [files]
+
+ Decrypt and re-encrypt files with a specified GPG key.
+ Either specify a directory to walk, checking for files ending with
+ .gpg, and/or specify files as positional arguments on the command
+ line
+
+   Positional arguments:
+     gpg-id            Hexadecimal GPG id to use for encryption
+     files             Files to re-encrypt with new key, optional. 
 
    Optional params:
      -h, --help        Show this help and exit
-     -f, --to-key      GPG key to encrypt to
      -d, --dest-dir    Directory to put newly encrypted .gpg files in
+                       Default: current directory
      -s, --source-dir  Directory search for .gpg files
+     -m, --max-depth   Maximum direcotory depth to search for .gpg files,
+                       implies --source-dir. Default: 6
+     -n, --no-decrypt  Don't decrypt anything, just encrypt
+     -e, --no-encrypt  Don't encrypt anything, just decrypt
      --dry-run         Only print commands, don't run
      --force           Transfer file even if target already exist
+     --verbose         Print commands to console before execution
 
 EOF
 
 my $GPG='/usr/bin/gpg';
-my %PARAMS = ( to_key   => '', to_dir   => '.', from_dir => '',
-               dry_run => 0, force => 0);
+my %PARAMS = ( gpg_id     => '',
+               dest_dir   => '.',
+               source_dir => '',
+               no_decrypt => 0,
+               no_encrypt => 0,
+               dry_run    => 0,
+               force      => 0,
+               maxdepth   => 6
+);
 
-main();
 
-#### SUBROUTINES #####
+sub parse_args {
+  my @posargs = ();
+  my $arg;
+  for (my $i = 0; $i < scalar @ARGV; $i++){
+    $arg = $ARGV[$i];
+    if ($arg =~ /^-/) {
 
-sub main {
-  my $files = parse_args();
-  my $infile;
-  my $encrypt_cmd = gpg_encrypt($PARAMS{to_key});
-  find_gpg_files($PARAMS{from_dir}, $files) if ($PARAMS{from_dir});
-  my $from_dir_nchar = length($PARAMS{from_dir});
-  foreach $infile (@{$files}) {
-    my $decrypt_cmd = gpg_decrypt($infile);
-    my $outfile = "$PARAMS{to_dir}/" . substr($infile, $from_dir_nchar); $outfile =~ s://+:/:g;
-    if (outfile_is_ok($outfile)) {
-      my $cmd =  "$decrypt_cmd | $encrypt_cmd > $outfile";
-      say $cmd;
-      #`$cmd`;
+      if    ($arg eq '-h' || $arg eq '--help')          { die $usage }
+      elsif ($arg eq '-s' || $arg eq '--source-dir')    { $PARAMS{source_dir} = $ARGV[++$i] }
+      elsif ($arg eq '-d' || $arg eq '--dest-dir')      { $PARAMS{dest_dir}   = $ARGV[++$i] }
+      elsif ($arg eq '-m' || $arg eq '--max-depth')     { $PARAMS{maxdepth}   = $ARGV[++$i] }
+      elsif ($arg eq '-n' || $arg eq '--no-decrypt'     { $PARAMS{no_decrypt} = 1 }
+      elsif ($arg eq '-e' || $arg eq '--no-encrypt'     { $PARAMS{no_encrypt} = 1 }
+      elsif ($arg eq '--dry-run')                       { $PARAMS{dry_run}    = 1 }
+      elsif ($arg eq '--force')                         { $PARAMS{force}      = 1 }
+      elsif ($arg eq '--verbose')                       { $PARAMS{verbose}    = 1 }
+      else { die "${usage}Unregocnized argument: $arg\n" }
+
     } else {
-      say STDERR "File $outfile already exist, will not transfer $infile to $outfile (use --force to override)";
+      if ($PARAMS{gpg_id}) { push @posargs, $arg } else { $PARAMS{gpg_id}       = $arg      }
     }
+  }
+  return \@posargs;
+}
+
+# Check args:
+my $files = parse_args();
+die "${usage}No key specified\n"                                             unless $PARAMS{gpg_id};
+die "${usage}Not a valid gpg id: $PARAMS{gpg_id}\n"                          unless $PARAMS{gpg_id} =~ /^[\da-f]+$/i;  # Only allow hexadecimal characters
+die "${usage}Key not found: $PARAMS{gpg_id}\n"                               unless gpg_key_exist($PARAMS{gpg_id});
+die "${usage}Max depth need to be an integer, not this: $PARAMS{maxdepth}\n" unless $PARAMS{maxdepth} =~ /^\d+$/;
+die "${usage}Max depth implies --source-dir\n"                               if     (! $PARAMS{source_dir} && (grep /^-(m|-max-depth)$/, @ARGV));
+die "${usage}Source directory not found\n"                                   if     ($PARAMS{source_dir}   && ! -d $PARAMS{source_dir});
+die "${usage}Need to specify files and/or a source directory\n"              if     (scalar @$files == 0   && ! $PARAMS{source_dir});
+
+# Program:
+find_gpg_files($PARAMS{source_dir}, $files) if ($PARAMS{source_dir});
+my $source_dir_nchar = length($PARAMS{source_dir});
+foreach my $infile (@{$files}) {
+  die "${usage}File does not exist\n" unless (-f $infile);
+  my $outfile = "$PARAMS{dest_dir}/" . substr($infile, $source_dir_nchar); $outfile =~ s://+:/:g;
+
+  my $decrypt_cmd = $PARAMS{no_decrypt} ? "cat $infile" : "$GPG --decrypt $infile" ;
+  my $encrypt_cmd = $PARAMS{no_encrypt} ? "cat - "      : "$GPG --encrypt --recipient $PARAMS{gpg_id}";
+  my $cmd = "$decrypt_cmd | $encrypt_cmd > $outfile"
+
+  print "$cmd\n" if $PARAMS{verbose};
+  unless ($PARAMS{dry_run}) {
+    if (! -d dirname($outfile)) { mkdir dirname($outfile) }
+    if (-f outfile && $PARAMS{force} == 0) {
+      print STDERR "$outfile already exist, will not transfer $infile to $outfile (use --force to override)\n";
+      next;
+    }
+    `$cmd`
   }
 }
 
-sub outfile_is_ok {
-  my $fpath = shift;
-  my $force = shift || 0;
-  
-  if (-f $fpath) { return $force ? 1 : 0; }
+#### SUBROUTINES #####
 
-  my $dname = dirname($fpath);
-  mkdir $dname unless (-d $dname);
-  return 1;
+sub gpg_key_exist {
+  my $k = shift;
+  `$GPG --list-keys $k`;
+  return ($? == 0) ? 1 : 0;
 }
 
 sub find_gpg_files {
@@ -80,34 +130,3 @@ sub find_gpg_files {
   return 1;
 }
 
-sub gpg_decrypt {
-  my $infile = shift;
-  if (! -f $infile) { die "$usage\n\nFile does not exist: $infile" }
-  return "$GPG --decrypt $infile";
-}
-
-sub gpg_encrypt {
-  my $gpg_id = shift;
-  if     ($gpg_id =~ /![\da-f]/i) { die "${usage}Not a valid gpg id: $gpg_id" }
-  unless ($gpg_id =~ /[\da-f]/i ) { die "${usage}Not a valid gpg id: $gpg_id" }
-  return "$GPG --encrypt --recipient $gpg_id"
-}
-
-sub parse_args {
-  my @posargs;
-  my $arg;
-  for (my $i = 0; $i < scalar @ARGV; $i++){
-    $arg = $ARGV[$i];
-    if ($arg =~ /^-/) {
-      if ($arg eq '-h' || $arg eq '--help')       { die $usage }
-      if ($arg eq '-t' || $arg eq '--to-key')     { $PARAMS{to_key}   = $ARGV[++$i] }
-      if ($arg eq '-s' || $arg eq '--source-dir') { $PARAMS{from_dir} = $ARGV[++$i] }
-      if ($arg eq '-d' || $arg eq '--dest-dir')   { $PARAMS{to_dir}   = $ARGV[++$i] }
-      if ($arg eq '--dry-run')                    { $PARAMS{dry_run}  = $ARGV[++$i] }
-      if ($arg eq '--force')                      { $PARAMS{force}  = $ARGV[++$i] }
-    } else {
-      push @posargs, $arg;
-    }
-  }
-  return \@posargs;
-}
