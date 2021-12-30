@@ -56,8 +56,8 @@ sub parse_args {
       elsif ($arg eq '-s' || $arg eq '--source-dir')    { $PARAMS{source_dir} = $ARGV[++$i] }
       elsif ($arg eq '-d' || $arg eq '--dest-dir')      { $PARAMS{dest_dir}   = $ARGV[++$i] }
       elsif ($arg eq '-m' || $arg eq '--max-depth')     { $PARAMS{maxdepth}   = $ARGV[++$i] }
-      elsif ($arg eq '-n' || $arg eq '--no-decrypt'     { $PARAMS{no_decrypt} = 1 }
-      elsif ($arg eq '-e' || $arg eq '--no-encrypt'     { $PARAMS{no_encrypt} = 1 }
+      elsif ($arg eq '-n' || $arg eq '--no-decrypt')    { $PARAMS{no_decrypt} = 1 }
+      elsif ($arg eq '-e' || $arg eq '--no-encrypt')    { $PARAMS{no_encrypt} = 1 }
       elsif ($arg eq '--dry-run')                       { $PARAMS{dry_run}    = 1 }
       elsif ($arg eq '--force')                         { $PARAMS{force}      = 1 }
       elsif ($arg eq '--verbose')                       { $PARAMS{verbose}    = 1 }
@@ -81,7 +81,7 @@ die "${usage}Source directory not found\n"                                   if 
 die "${usage}Need to specify files and/or a source directory\n"              if     (scalar @$files == 0   && ! $PARAMS{source_dir});
 
 # Program:
-find_gpg_files($PARAMS{source_dir}, $files) if ($PARAMS{source_dir});
+find_gpg_files($PARAMS{source_dir}, $files, $PARAMS{maxdepth}) if ($PARAMS{source_dir});
 my $source_dir_nchar = length($PARAMS{source_dir});
 foreach my $infile (@{$files}) {
   die "${usage}File does not exist\n" unless (-f $infile);
@@ -89,12 +89,12 @@ foreach my $infile (@{$files}) {
 
   my $decrypt_cmd = $PARAMS{no_decrypt} ? "cat $infile" : "$GPG --decrypt $infile" ;
   my $encrypt_cmd = $PARAMS{no_encrypt} ? "cat - "      : "$GPG --encrypt --recipient $PARAMS{gpg_id}";
-  my $cmd = "$decrypt_cmd | $encrypt_cmd > $outfile"
+  my $cmd = "$decrypt_cmd | $encrypt_cmd > $outfile";
 
   print "$cmd\n" if $PARAMS{verbose};
   unless ($PARAMS{dry_run}) {
     if (! -d dirname($outfile)) { mkdir dirname($outfile) }
-    if (-f outfile && $PARAMS{force} == 0) {
+    if (-f $outfile && $PARAMS{force} == 0) {
       print STDERR "$outfile already exist, will not transfer $infile to $outfile (use --force to override)\n";
       next;
     }
@@ -113,7 +113,7 @@ sub gpg_key_exist {
 sub find_gpg_files {
   my $dir     = shift;
   my $matches = shift;
-  my $depth   = shift || 5;
+  my $depth   = shift;
 
   if ($depth <= 0) { return -1 }
   unless (-d $dir) { return 0  }
