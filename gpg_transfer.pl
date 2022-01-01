@@ -87,18 +87,23 @@ foreach my $infile (@{$files}) {
   die "${usage}File does not exist\n" unless (-f $infile);
   my $outfile = "$PARAMS{dest_dir}/" . substr($infile, $source_dir_nchar); $outfile =~ s://+:/:g;
 
-  my $decrypt_cmd = $PARAMS{no_decrypt} ? "cat $infile" : "$GPG --decrypt $infile" ;
-  my $encrypt_cmd = $PARAMS{no_encrypt} ? "cat - "      : "$GPG --encrypt --recipient $PARAMS{gpg_id}";
-  my $cmd = "$decrypt_cmd | $encrypt_cmd > $outfile";
-
-  print "$cmd\n" if $PARAMS{verbose};
+  print "Transfer $infile to $outfile\n" if $PARAMS{verbose};
   unless ($PARAMS{dry_run}) {
+
     if (! -d dirname($outfile)) { mkdir dirname($outfile) }
     if (-f $outfile && $PARAMS{force} == 0) {
       print STDERR "$outfile already exist, will not transfer $infile to $outfile (use --force to override)\n";
       next;
     }
-    `$cmd`
+
+    my ($DEC_FH, $ENC_FH, $buffer, $retcode) ;
+    $PARAMS{no_decrypt} ? open($DEC_FH, '<', "$infile")  : open($DEC_FH, '-|', "$GPG --decrypt $infile");
+    $PARAMS{no_encrypt} ? open($ENC_FH, '>', "$outfile") : open($ENC_FH, '|-', "$GPG --encrypt --recipient $PARAMS{gpg_id} > $outfile");
+
+    while ($retcode = read($DEC_FH, $buffer, 1024)) { print $ENC_FH $buffer }
+    print STDERR "Couldn't transfer $infile to $outfile: $!\n" unless defined $retcode;
+    close($DEC_FH);
+    close($ENC_FH);
   }
 }
 
